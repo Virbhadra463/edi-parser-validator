@@ -1,0 +1,70 @@
+# =====================
+# Backend (Python / FastAPI)
+# =====================
+# Environments
+backend/venv/
+backend/.venv/
+venv/
+.venv/
+env/
+ENV/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pytest and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local configuration
+backend/.env
+.env
+
+# =====================
+# Frontend (React / Vite)
+# =====================
+# Dependencies
+frontend/node_modules/
+node_modules/
+
+# Production builds
+frontend/dist/
+frontend/dist-ssr/
+dist/
+dist-ssr/
+build/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment Variables
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+.env.local
+
+# Testing and Misc
+frontend/coverage/
+frontend/.eslintcache
+coverage/
+.eslintcache
+
+# =====================
+# OS / Editor Files
+# =====================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
