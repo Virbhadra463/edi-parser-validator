@@ -79,7 +79,9 @@ export default function Upload({ onUpload, loading }: Props) {
             <div style={{ marginBottom: 16, display: "flex", justifyContent: "center" }}>
               <Loader2 size={36} color="#3b82f6" className="spin" />
             </div>
-            <p style={{ color: "#3b82f6", fontWeight: 600, margin: 0 }}>Processing file...</p>
+            <p style={{ color: "#3b82f6", fontWeight: 600, margin: 0 }}>
+              Waking up server. It may take a few seconds, please wait...
+            </p>
           </div>
         ) : (
           <div>
