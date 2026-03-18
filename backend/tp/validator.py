@@ -7,7 +7,6 @@ from typing import Any, Dict, List
 
 class EDIValidator:
     """Validates parsed EDI structures against X12 HIPAA 5010 rules."""
-
     GUIDE_MAP = {
         "005010X223A2": "837I",
         "005010X221A1": "837P",
@@ -15,16 +14,6 @@ class EDIValidator:
         "005010X279A1": "270",
         "005010X212":   "834",
         "005010X220A1": "835",
-    }
-
-    # Current valid implementation guide versions
-    VALID_GUIDES = {
-        "005010X223A2",  # 837I institutional
-        "005010X222A2",  # 837P professional
-        "005010X221A1",  # 837D dental
-        "005010X220A1",  # 835 remittance
-        "005010X279A1",  # 270/271 eligibility
-        "005010X212",    # 834 enrollment
     }
 
     def validate(self, parsed: dict, tx_type: str) -> List[Dict[str, Any]]:
@@ -40,7 +29,7 @@ class EDIValidator:
                 explanation="ST03/GS08 implementation guide does not match the declared transaction type.",
                 suggestion=detected,
             ))
-            tx_type = detected
+            tx_type = detected  # override so all rules below run correctly
 
         if tx_type in ("837P", "837I"):
             errors.extend(self._validate_837(parsed, tx_type))
@@ -55,38 +44,6 @@ class EDIValidator:
     # ------------------------------------------------------------------ #
     def _validate_837(self, parsed: dict, tx_type: str) -> List[Dict[str, Any]]:
         errors = []
-
-        # ----- Implementation guide version -----
-        guide = parsed.get("implementation_guide", "")
-        if guide and guide not in self.VALID_GUIDES:
-            errors.append(self._err(
-                segment="GS", element="GS08",
-                error_code="H020",
-                severity="error",
-                message=f"Implementation guide '{guide}' is not a current HIPAA 5010 version.",
-                explanation=(
-                    "The guide reference in GS08/ST03 must match a current approved version. "
-                    "005010X222A1 is retired — use 005010X222A2 for 837P, 005010X223A2 for 837I."
-                ),
-                suggestion="005010X222A2" if "X222" in guide else "005010X223A2",
-            ))
-
-        # ----- SE01 segment count -----
-        seg_count = parsed.get("st_segment_count", {})
-        claimed = seg_count.get("claimed", 0)
-        actual  = seg_count.get("actual", 0)
-        if claimed and actual and claimed != actual:
-            errors.append(self._err(
-                segment="SE", element="SE01",
-                error_code="H021",
-                severity="error",
-                message=f"Segment count mismatch: SE01 claims {claimed} but actual count is {actual}.",
-                explanation=(
-                    "SE01 must equal the exact number of segments from ST through SE inclusive. "
-                    "A wrong count causes envelope-level rejection before adjudication."
-                ),
-                suggestion=str(actual),
-            ))
 
         # ----- Billing Provider -----
         bp = parsed.get("billing_provider", {})
@@ -130,39 +87,6 @@ class EDIValidator:
                 ),
                 suggestion=None,
             ))
-
-        # ----- Subscriber checks (once per transaction, not per claim) -----
-        subscribers = parsed.get("subscribers", [])
-        for sub in subscribers:
-            # Member ID missing
-            member_id    = sub.get("member_id", "")
-            id_qualifier = sub.get("id_qualifier", "")
-            if id_qualifier and not member_id:
-                errors.append(self._err(
-                    segment="NM1", element="NM109",
-                    error_code="H017",
-                    severity="error",
-                    message="Subscriber member ID (NM109) is missing.",
-                    explanation="NM109 is required when NM108 qualifier is present (e.g. MI for Medicare).",
-                    suggestion=None,
-                ))
-
-            # SBR05 vs SBR09 conflict
-            sbr_insurance = sub.get("sbr_insurance_type", "")
-            sbr_filing    = sub.get("sbr_claim_filing", "")
-            CONFLICTS = {("CI", "MC"), ("CI", "MB"), ("HM", "MC"), ("HM", "MB")}
-            if sbr_insurance and sbr_filing and (sbr_insurance, sbr_filing) in CONFLICTS:
-                errors.append(self._err(
-                    segment="SBR", element="SBR05",
-                    error_code="H018",
-                    severity="warning",
-                    message=f"SBR05 '{sbr_insurance}' conflicts with SBR09 '{sbr_filing}'.",
-                    explanation=(
-                        "Insurance type code and claim filing indicator must be consistent. "
-                        "CI (commercial) cannot pair with MC/MB (Medicare)."
-                    ),
-                    suggestion=None,
-                ))
 
         for claim in claims:
             claim_id = claim.get("claim_id", "?")
@@ -222,7 +146,7 @@ class EDIValidator:
                 ))
             else:
                 for dx in diagnoses:
-                    code      = dx.get("code", "")
+                    code = dx.get("code", "")
                     qualifier = dx.get("qualifier", "")
                     if qualifier not in ("ABK", "ABF", ""):
                         errors.append(self._err(
@@ -265,7 +189,7 @@ class EDIValidator:
                 ))
             else:
                 for sl in service_lines:
-                    proc   = sl.get("procedure_code", "")
+                    proc = sl.get("procedure_code", "")
                     charge = sl.get("charge", "")
                     if not proc:
                         errors.append(self._err(
@@ -301,7 +225,7 @@ class EDIValidator:
                 ))
 
             # ----- Rendering Provider (Loop 2310B) -----
-            rp   = claim.get("rendering_provider", {})
+            rp = claim.get("rendering_provider", {})
             rnpi = rp.get("npi", "")
             if rnpi:
                 if not rnpi.isdigit() or len(rnpi) != 10:
@@ -323,7 +247,37 @@ class EDIValidator:
                         suggestion=None,
                     ))
 
-            # ----- CLM filing indicator vs SBR09 mismatch -----
+            # ----- Subscriber member ID -----
+            subscribers = parsed.get("subscribers", [])
+            for sub in subscribers:
+                member_id = sub.get("member_id", "")
+                id_qualifier = sub.get("id_qualifier", "")
+                if id_qualifier and not member_id:
+                    errors.append(self._err(
+                        segment="NM1", element="NM109",
+                        error_code="H017",
+                        severity="error",
+                        message=f"Claim '{claim_id}': subscriber member ID (NM109) is missing.",
+                        explanation="NM109 is required when NM108 qualifier is present (e.g. MI for Medicare).",
+                        suggestion=None,
+                    ))
+
+            # ----- SBR05 vs SBR09 conflict -----
+            for sub in subscribers:
+                sbr_insurance = sub.get("sbr_insurance_type", "")
+                sbr_filing    = sub.get("sbr_claim_filing", "")
+                CONFLICTS = {("CI", "MC"), ("CI", "MB"), ("HM", "MC"), ("HM", "MB")}
+                if sbr_insurance and sbr_filing and (sbr_insurance, sbr_filing) in CONFLICTS:
+                    errors.append(self._err(
+                        segment="SBR", element="SBR05",
+                        error_code="H018",
+                        severity="warning",
+                        message=f"Claim '{claim_id}': SBR05 '{sbr_insurance}' conflicts with SBR09 '{sbr_filing}'.",
+                        explanation="Insurance type code and claim filing indicator must be consistent. CI=commercial cannot pair with MC/MB=Medicare.",
+                        suggestion=None,
+                    ))
+
+            # ----- CLM09 filing indicator vs SBR09 mismatch -----
             filing_indicator = claim.get("filing_indicator", "")
             for sub in subscribers:
                 sbr_filing = sub.get("sbr_claim_filing", "")
@@ -334,32 +288,27 @@ class EDIValidator:
                         segment="CLM", element="CLM09",
                         error_code="H019",
                         severity="warning",
-                        message=f"Claim '{claim_id}': filing indicator '{filing_indicator}' does not match SBR09 '{sbr_filing}'.",
-                        explanation=(
-                            "The claim filing indicator must be consistent with the payer type in SBR09. "
-                            f"SBR09='{sbr_filing}' expects filing indicator '{expected}'."
-                        ),
+                        message=f"Claim '{claim_id}': CLM09 filing indicator '{filing_indicator}' does not match SBR09 '{sbr_filing}'.",
+                        explanation="The claim filing indicator must be consistent with the payer type declared in SBR09.",
                         suggestion=expected,
                     ))
 
-            # ----- CLM05 facility type for 837P -----
+            # CLM05 – facility type for 837P
             if tx_type == "837P":
                 facility = claim.get("facility_type", "")
-                valid_pos = {
-                    "11", "12", "22", "23", "24", "31", "32", "49", "50",
-                    "51", "52", "53", "54", "55", "56", "57", "60", "61",
-                    "62", "65", "71", "72", "81", "99",
-                }
-                if facility and facility not in valid_pos:
+                valid_11 = {"11", "12", "22", "23", "24", "31", "32", "49", "50",
+                            "51", "52", "53", "54", "55", "56", "57", "60", "61",
+                            "62", "65", "71", "72", "81", "99"}
+                if facility and facility not in valid_11:
                     errors.append(self._err(
                         segment="CLM", element="CLM05-1",
                         error_code="H014",
                         severity="warning",
                         message=f"Claim '{claim_id}': facility type code '{facility}' is unusual for an 837P.",
                         explanation=(
-                            "837P professional claims use place-of-service codes like "
+                            "837P professional claims typically use place-of-service codes like "
                             "11 (office), 22 (outpatient hospital), 23 (ER). "
-                            "Institutional codes belong in an 837I."
+                            "Institutional codes (21, 22-inpatient) belong in an 837I."
                         ),
                         suggestion="11",
                     ))
@@ -406,10 +355,11 @@ class EDIValidator:
                 suggestion=None,
             ))
 
-        for claim in parsed.get("claims", []):
+        claims = parsed.get("claims", [])
+        for claim in claims:
             claim_id = claim.get("claim_id", "?")
-            billed   = claim.get("billed_amount", "")
-            paid     = claim.get("paid_amount", "")
+            billed = claim.get("billed_amount", "")
+            paid = claim.get("paid_amount", "")
 
             if not billed:
                 errors.append(self._err(
@@ -430,6 +380,7 @@ class EDIValidator:
                     suggestion=None,
                 ))
 
+            # Crossed amounts check
             try:
                 b = float(billed or 0)
                 p = float(paid or 0)
@@ -468,10 +419,10 @@ class EDIValidator:
             ))
 
         for member in members:
-            name   = member.get("name", "")
+            name = member.get("name", "")
             sub_id = member.get("subscriber_id", "")
-            dob    = member.get("dob", "")
-            maint  = member.get("maintenance_type", "")
+            dob = member.get("dob", "")
+            maint = member.get("maintenance_type", "")
 
             if not name:
                 errors.append(self._err(
@@ -536,13 +487,13 @@ class EDIValidator:
         suggestion,
     ) -> Dict[str, Any]:
         return {
-            "segment":     segment,
-            "element":     element,
-            "error_code":  error_code,
-            "severity":    severity,
-            "message":     message,
+            "segment": segment,
+            "element": element,
+            "error_code": error_code,
+            "severity": severity,
+            "message": message,
             "explanation": explanation,
-            "suggestion":  suggestion,
+            "suggestion": suggestion,
         }
 
     @staticmethod
@@ -550,7 +501,8 @@ class EDIValidator:
         """Validate NPI using the Luhn algorithm with a constant prefix of 80840."""
         if not npi or len(npi) != 10 or not npi.isdigit():
             return False
-        full  = "80840" + npi
+        # Prefix 80840 prepended for NPI Luhn calculation
+        full = "80840" + npi
         total = 0
         for i, ch in enumerate(reversed(full)):
             n = int(ch)

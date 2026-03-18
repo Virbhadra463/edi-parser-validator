@@ -6,17 +6,24 @@ from typing import Optional
 class EDIParser:
     def detect_transaction(self, raw: str) -> Optional[dict]:
         """Detect ISA/GS/ST and return metadata."""
+        # Normalize line endings
         raw = raw.replace("\n", "").replace("\r", "")
 
+        # Find segment terminator - typically ~ but detect it
         seg_term = "~"
         if "ISA" in raw:
             isa_start = raw.index("ISA")
+            # Element separator is always the 4th char of ISA (position 3)
             elem_sep = raw[isa_start + 3]
-            isa_elements = raw[isa_start:].split(elem_sep, 17)
+            # Split ISA into elements; ISA has 16 elements after the tag.
+            # The segment terminator immediately follows ISA16 (1 char).
+            isa_elements = raw[isa_start:].split(elem_sep, 17)  # ISA + 16 elements = 17 splits
             if len(isa_elements) >= 17:
+                # ISA16 is the component element separator (1 char)
+                # The segment terminator is the character right after ISA16
                 isa16_and_rest = isa_elements[16]
                 if len(isa16_and_rest) >= 2:
-                    seg_term = isa16_and_rest[1]
+                    seg_term = isa16_and_rest[1]  # char after the 1-char ISA16 value
 
         segments = [s.strip() for s in raw.split(seg_term) if s.strip()]
 
@@ -37,6 +44,7 @@ class EDIParser:
         if not isa:
             return None
 
+        # Determine transaction type
         tx_type = "UNKNOWN"
         if st:
             st_code = st[1] if len(st) > 1 else ""
@@ -96,14 +104,12 @@ class EDIParser:
             "subscribers": [],
             "claims": [],
             "implementation_guide": "",
-            "st_segment_count": {},
-            "raw_segments": [],
+            "raw_segments": []
         }
 
         current_subscriber = None
         current_claim = None
         current_services = []
-        pending_sbr = None          # holds SBR values until NM1*IL creates the subscriber
         loop = None
 
         for seg in segments:
@@ -124,8 +130,8 @@ class EDIParser:
                     "control_number": els[13] if len(els) > 13 else "",
                 }
 
-            elif tag == "GS":
-                result["implementation_guide"] = els[8].strip() if len(els) > 8 else ""
+            elif tag == "GS":                                                          
+                result["implementation_guide"] = els[8].strip() if len(els) > 8 else ""  
 
             elif tag == "NM1":
                 entity_id = els[1] if len(els) > 1 else ""
@@ -133,38 +139,30 @@ class EDIParser:
                 npi = els[9] if len(els) > 9 else ""
                 id_code = els[8] if len(els) > 8 else ""
 
-                if entity_id == "41":
+                if entity_id == "41":  # Submitter
                     result["submitter"] = {"name": name, "id_qualifier": id_code, "id": npi}
                     loop = "submitter"
-                elif entity_id == "40":
+                elif entity_id == "40":  # Receiver
                     result["receiver"] = {"name": name}
                     loop = "receiver"
-                elif entity_id == "85":
+                elif entity_id == "85":  # Billing Provider
                     result["billing_provider"] = {"name": name, "npi": npi}
                     loop = "billing_provider"
-                elif entity_id == "IL":
+                elif entity_id == "IL":  # Subscriber
                     if current_claim and current_services:
                         current_claim["service_lines"] = current_services
                         current_services = []
                     current_subscriber = {
                         "name": name,
                         "member_id": npi,
-                        "id_qualifier": id_code,
-                        # apply SBR values captured before this NM1*IL
-                        "sbr_insurance_type": pending_sbr.get("sbr_insurance_type", "") if pending_sbr else "",
-                        "sbr_claim_filing":   pending_sbr.get("sbr_claim_filing",   "") if pending_sbr else "",
+                        "id_qualifier": id_code
                     }
-                    pending_sbr = None
                     loop = "subscriber"
-                elif entity_id == "QC":
+                elif entity_id == "QC":  # Patient
                     if current_subscriber:
-                        current_subscriber["patient"] = {
-                            "name": name,
-                            "id_qualifier": id_code,
-                            "member_id": npi,
-                        }
+                        current_subscriber["patient"] = {"name": name}
                     loop = "patient"
-                elif entity_id == "82":
+                elif entity_id == "82":  # Rendering Provider
                     if current_claim:
                         current_claim["rendering_provider"] = {"name": name, "npi": npi}
 
@@ -176,18 +174,11 @@ class EDIParser:
                         current_subscriber.setdefault("patient", {}).update({"dob": dob, "gender": gender})
                     else:
                         current_subscriber.update({"dob": dob, "gender": gender})
-
+            
             elif tag == "SBR":
-                # SBR always comes before NM1*IL, so store temporarily
-                pending_sbr = {
-                    "sbr_insurance_type": els[5] if len(els) > 5 else "",   # SBR05
-                    "sbr_claim_filing":   els[9] if len(els) > 9 else "",   # SBR09
-                }
-                # Also update current_subscriber if it already exists (shouldn't normally happen)
                 if current_subscriber is not None:
-                    current_subscriber["sbr_insurance_type"] = pending_sbr["sbr_insurance_type"]
-                    current_subscriber["sbr_claim_filing"]   = pending_sbr["sbr_claim_filing"]
-                    pending_sbr = None
+                    current_subscriber["sbr_insurance_type"] = els[5] if len(els) > 5 else ""  # SBR05
+                    current_subscriber["sbr_claim_filing"]   = els[9] if len(els) > 9 else ""  # SBR09
 
             elif tag == "CLM":
                 if current_claim:
@@ -200,59 +191,53 @@ class EDIParser:
                 clm05 = els[5] if len(els) > 5 else ""
                 parts = clm05.split(":")
                 current_claim = {
-                    "claim_id":               els[1] if len(els) > 1 else "",
-                    "total_charge":           els[2] if len(els) > 2 else "",
-                    # CLM03 and CLM04 are empty in 837P; els[5] is reliably CLM05
-                    "facility_type":          parts[0] if parts else "",
-                    "facility_qualifier":     parts[1] if len(parts) > 1 else "",
-                    "claim_frequency":        parts[2] if len(parts) > 2 else "",
+                    "claim_id": els[1] if len(els) > 1 else "",
+                    "total_charge": els[2] if len(els) > 2 else "",
+                    "facility_type": parts[0] if parts else "",
+                    "claim_frequency": parts[2] if len(parts) > 2 else "",
                     "assignment_of_benefits": els[6] if len(els) > 6 else "",
-                    "provider_signature":     els[7] if len(els) > 7 else "",
-                    # CLM07 = filing indicator (els[7] in a properly formed segment with *** for CLM03/04)
-                    # CLM09 = filing indicator when CLM03/CLM04 are truly omitted (compressed)
-                    # We capture both positions and use whichever is populated
-                    "filing_indicator":       els[9] if len(els) > 9 else (els[7] if len(els) > 7 else ""),
+                    "provider_signature": els[7] if len(els) > 7 else "",
+                    "filing_indicator": els[9] if len(els) > 9 else "",
                     "service_lines": [],
                     "diagnoses": [],
                 }
                 loop = "claim"
 
-            elif tag == "HI":
+            elif tag == "HI":  # Diagnosis codes
                 if current_claim:
                     for i in range(1, len(els)):
                         code_pair = els[i].split(":")
                         if len(code_pair) >= 2:
                             current_claim["diagnoses"].append({
                                 "qualifier": code_pair[0],
-                                "code": code_pair[1],
+                                "code": code_pair[1]
                             })
 
             elif tag == "DTP" and loop == "claim":
                 if current_claim and els[1] == "472":
                     current_claim["service_date"] = els[3] if len(els) > 3 else ""
 
-            elif tag == "SV1":
+            elif tag == "SV1":  # Professional service line
                 proc = els[1].split(":") if len(els) > 1 else []
                 current_services.append({
-                    "procedure_code":      proc[1] if len(proc) > 1 else proc[0] if proc else "",
+                    "procedure_code": proc[1] if len(proc) > 1 else proc[0] if proc else "",
                     "procedure_qualifier": proc[0] if proc else "",
-                    "charge":              els[2] if len(els) > 2 else "",
-                    "units":               els[4] if len(els) > 4 else "",
-                    "modifier":            proc[2] if len(proc) > 2 else "",
+                    "charge": els[2] if len(els) > 2 else "",
+                    "units": els[4] if len(els) > 4 else "",
+                    "modifier": proc[2] if len(proc) > 2 else "",
                 })
 
-            elif tag == "SV2":
+            elif tag == "SV2":  # Institutional service line
                 rev_code = els[1] if len(els) > 1 else ""
                 proc = els[2].split(":") if len(els) > 2 else []
                 current_services.append({
-                    "revenue_code":   rev_code,
+                    "revenue_code": rev_code,
                     "procedure_code": proc[1] if len(proc) > 1 else "",
-                    "charge":         els[3] if len(els) > 3 else "",
-                    "units":          els[5] if len(els) > 5 else "",
+                    "charge": els[3] if len(els) > 3 else "",
+                    "units": els[5] if len(els) > 5 else "",
                 })
 
             elif tag == "SE":
-                # Calculate actual segment count (ST through SE inclusive)
                 claimed = int(els[1]) if len(els) > 1 and els[1].isdigit() else 0
                 st_found = False
                 actual = 0
@@ -263,13 +248,8 @@ class EDIParser:
                         actual += 1
                     if rs["tag"] == "SE" and st_found:
                         break
-                result["st_segment_count"] = {"claimed": claimed, "actual": actual}
 
-                if current_claim:
-                    current_claim["service_lines"] = current_services
-                    result["claims"].append(current_claim)
-                if current_subscriber:
-                    result["subscribers"].append(current_subscriber)
+                result["st_segment_count"] = {"claimed": claimed, "actual": actual} 
 
         return result
 
@@ -281,7 +261,7 @@ class EDIParser:
             "payee": {},
             "check_info": {},
             "claims": [],
-            "raw_segments": [],
+            "raw_segments": []
         }
 
         current_claim = None
@@ -303,11 +283,11 @@ class EDIParser:
             elif tag == "BPR":
                 result["check_info"] = {
                     "transaction_handling": els[1] if len(els) > 1 else "",
-                    "amount":               els[2] if len(els) > 2 else "",
-                    "credit_debit":         els[3] if len(els) > 3 else "",
-                    "payment_method":       els[4] if len(els) > 4 else "",
-                    "check_number":         els[9] if len(els) > 9 else "",
-                    "payment_date":         els[16] if len(els) > 16 else "",
+                    "amount": els[2] if len(els) > 2 else "",
+                    "credit_debit": els[3] if len(els) > 3 else "",
+                    "payment_method": els[4] if len(els) > 4 else "",
+                    "check_number": els[9] if len(els) > 9 else "",
+                    "payment_date": els[16] if len(els) > 16 else "",
                 }
 
             elif tag == "CLP":
@@ -327,16 +307,16 @@ class EDIParser:
                 }
                 status_code = els[2] if len(els) > 2 else ""
                 current_claim = {
-                    "claim_id":             els[1] if len(els) > 1 else "",
-                    "status_code":          status_code,
-                    "status":               status_map.get(status_code, status_code),
-                    "billed_amount":        els[3] if len(els) > 3 else "",
-                    "paid_amount":          els[4] if len(els) > 4 else "",
+                    "claim_id": els[1] if len(els) > 1 else "",
+                    "status_code": status_code,
+                    "status": status_map.get(status_code, status_code),
+                    "billed_amount": els[3] if len(els) > 3 else "",
+                    "paid_amount": els[4] if len(els) > 4 else "",
                     "patient_responsibility": els[5] if len(els) > 5 else "",
-                    "claim_type":           els[6] if len(els) > 6 else "",
-                    "payer_icn":            els[7] if len(els) > 7 else "",
-                    "adjustments":          [],
-                    "service_lines":        [],
+                    "claim_type": els[6] if len(els) > 6 else "",
+                    "payer_icn": els[7] if len(els) > 7 else "",
+                    "adjustments": [],
+                    "service_lines": [],
                 }
 
             elif tag == "CAS" and current_claim:
@@ -344,15 +324,10 @@ class EDIParser:
                 carc = els[2] if len(els) > 2 else ""
                 amount = els[3] if len(els) > 3 else ""
                 current_claim["adjustments"].append({
-                    "group_code":  group,
-                    "group_label": {
-                        "PR": "Patient Responsibility",
-                        "CO": "Contractual Obligation",
-                        "OA": "Other Adjustment",
-                        "PI": "Payer Initiated",
-                    }.get(group, group),
+                    "group_code": group,
+                    "group_label": {"PR": "Patient Responsibility", "CO": "Contractual Obligation", "OA": "Other Adjustment", "PI": "Payer Initiated"}.get(group, group),
                     "reason_code": carc,
-                    "amount":      amount,
+                    "amount": amount
                 })
 
             elif tag == "NM1" and current_claim:
@@ -367,9 +342,9 @@ class EDIParser:
                 proc = els[1].split(":") if len(els) > 1 else []
                 current_services.append({
                     "procedure_code": proc[1] if len(proc) > 1 else proc[0] if proc else "",
-                    "billed":         els[2] if len(els) > 2 else "",
-                    "paid":           els[3] if len(els) > 3 else "",
-                    "units":          els[5] if len(els) > 5 else "",
+                    "billed": els[2] if len(els) > 2 else "",
+                    "paid": els[3] if len(els) > 3 else "",
+                    "units": els[5] if len(els) > 5 else "",
                 })
 
             elif tag == "SE":
@@ -385,18 +360,18 @@ class EDIParser:
             "envelope": {},
             "sponsor": {},
             "members": [],
-            "raw_segments": [],
+            "raw_segments": []
         }
 
         current_member = None
         maintenance_map = {
             "001": "Change", "021": "Addition", "024": "Cancellation/Termination",
             "025": "Reinstatement", "030": "Audit/Compare", "XB": "COBRA Begin",
-            "XC": "COBRA End",
+            "XC": "COBRA End"
         }
         rel_map = {
-            "18": "Self", "01": "Spouse", "19": "Child",
-            "34": "Other Adult", "G8": "Other Relationship",
+            "18": "Self", "01": "Spouse", "19": "Child", "34": "Other Adult",
+            "G8": "Other Relationship"
         }
 
         for seg in segments:
@@ -415,24 +390,25 @@ class EDIParser:
             elif tag == "INS":
                 if current_member:
                     result["members"].append(current_member)
+
                 maint_code = els[3] if len(els) > 3 else ""
-                rel_code   = els[2] if len(els) > 2 else ""
+                rel_code = els[2] if len(els) > 2 else ""
                 current_member = {
                     "subscriber_indicator": els[1] if len(els) > 1 else "",
-                    "relationship_code":    rel_code,
-                    "relationship":         rel_map.get(rel_code, rel_code),
-                    "maintenance_type":     maint_code,
-                    "maintenance_label":    maintenance_map.get(maint_code, maint_code),
-                    "maintenance_reason":   els[4] if len(els) > 4 else "",
-                    "benefit_status":       els[5] if len(els) > 5 else "",
-                    "employment_status":    els[8] if len(els) > 8 else "",
-                    "coverage":             [],
-                    "dependents":           [],
+                    "relationship_code": rel_code,
+                    "relationship": rel_map.get(rel_code, rel_code),
+                    "maintenance_type": maint_code,
+                    "maintenance_label": maintenance_map.get(maint_code, maint_code),
+                    "maintenance_reason": els[4] if len(els) > 4 else "",
+                    "benefit_status": els[5] if len(els) > 5 else "",
+                    "employment_status": els[8] if len(els) > 8 else "",
+                    "coverage": [],
+                    "dependents": [],
                 }
 
             elif tag == "REF" and current_member:
                 qual = els[1] if len(els) > 1 else ""
-                val  = els[2] if len(els) > 2 else ""
+                val = els[2] if len(els) > 2 else ""
                 if qual == "0F":
                     current_member["subscriber_id"] = val
                 elif qual == "1L":
@@ -444,12 +420,12 @@ class EDIParser:
                 entity = els[1] if len(els) > 1 else ""
                 name = f"{els[3]} {els[4]}".strip() if len(els) > 4 else els[3] if len(els) > 3 else ""
                 if entity in ("IL", "74", "EI"):
-                    current_member["name"]          = name
-                    current_member["ssn_qualifier"]  = els[8] if len(els) > 8 else ""
-                    current_member["ssn"]            = els[9] if len(els) > 9 else ""
+                    current_member["name"] = name
+                    current_member["ssn_qualifier"] = els[8] if len(els) > 8 else ""
+                    current_member["ssn"] = els[9] if len(els) > 9 else ""
 
             elif tag == "DMG" and current_member:
-                current_member["dob"]    = els[2] if len(els) > 2 else ""
+                current_member["dob"] = els[2] if len(els) > 2 else ""
                 current_member["gender"] = els[3] if len(els) > 3 else ""
 
             elif tag == "DTP" and current_member:
@@ -465,7 +441,7 @@ class EDIParser:
             elif tag == "HD" and current_member:
                 current_member["coverage"].append({
                     "maintenance_type": els[1] if len(els) > 1 else "",
-                    "insurance_line":   els[3] if len(els) > 3 else "",
+                    "insurance_line": els[3] if len(els) > 3 else "",
                     "plan_description": els[4] if len(els) > 4 else "",
                 })
 
@@ -480,9 +456,11 @@ class EDIParser:
         import copy
         fixed = copy.deepcopy(parsed)
 
+        # Walk raw_segments and fix matching segment+element
         for raw_seg in fixed.get("raw_segments", []):
             if raw_seg["tag"] == segment:
                 try:
+                    # Handle composite elements like HI01-1 or HI01:1
                     main_el = element
                     sub_idx = -1
                     if "-" in element:
@@ -493,6 +471,7 @@ class EDIParser:
                     el_idx = int(main_el.replace(segment, "")) - 1
                     if el_idx < len(raw_seg["elements"]):
                         if sub_idx != -1:
+                            # It's a composite sub-element (e.g., BK:486)
                             sub_idx = int(sub_idx) - 1
                             comps = raw_seg["elements"][el_idx].split(":")
                             if sub_idx < len(comps):
@@ -500,10 +479,12 @@ class EDIParser:
                                 raw_seg["elements"][el_idx] = ":".join(comps)
                         else:
                             raw_seg["elements"][el_idx] = value
+                        
                         raw_seg["raw"] = segment + "*" + "*".join(raw_seg["elements"])
                 except (ValueError, IndexError):
                     pass
 
+        # Also update high-level fields for claims
         if segment == "CLM" and "02" in element:
             for claim in fixed.get("claims", []):
                 claim["total_charge"] = value

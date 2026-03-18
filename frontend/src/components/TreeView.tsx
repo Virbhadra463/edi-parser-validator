@@ -136,7 +136,24 @@ interface Props {
 }
 
 export default function TreeView({ parsed, errors, highlightedSegment }: Props) {
-  const errorSegments = new Set(errors.map(e => e.segment.toUpperCase()));
+  // Map raw X12 segments to the human-readable JSON keys in our parsed output
+  const errorKeys = new Set<string>();
+  errors.forEach(e => {
+    const seg = e.segment.toUpperCase();
+    errorKeys.add(seg); // Keep the original just in case
+    if (seg === "CLM") { errorKeys.add("claims"); errorKeys.add("total_charge"); errorKeys.add("facility_type"); }
+    if (seg === "HI") { errorKeys.add("diagnoses"); }
+    if (seg === "NM1") { errorKeys.add("billing_provider"); errorKeys.add("rendering_provider"); errorKeys.add("subscribers"); errorKeys.add("sponsor"); }
+    if (seg.startsWith("SV") || seg === "SVC") { errorKeys.add("service_lines"); errorKeys.add("charge"); errorKeys.add("procedure_code"); }
+    if (seg === "DTP") { errorKeys.add("service_date"); errorKeys.add("coverage_begin"); }
+    if (seg === "BPR") { errorKeys.add("check_info"); }
+    if (seg === "CLP") { errorKeys.add("billed_amount"); errorKeys.add("paid_amount"); }
+    if (seg === "INS") { errorKeys.add("members"); }
+    if (seg === "DMG") { errorKeys.add("dob"); }
+    if (seg === "REF") { errorKeys.add("subscriber_id"); }
+  });
+
+  const errorSegments = new Set(Array.from(errorKeys).map(k => k.toUpperCase()));
 
   // Build a clean view — remove raw_segments from top level display
   const displayData = Object.fromEntries(
